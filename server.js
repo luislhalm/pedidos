@@ -2,20 +2,58 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const XLSX = require('xlsx');
+const jwt = require('jsonwebtoken');
+const jwksClient = require('jwks-rsa');
 
 const {
   PORT = 3000,
   ONEDRIVE_SHARE_LINK,
-  CACHE_SECONDS = 60
+  CACHE_SECONDS = 60,
+  TENANT_ID,
+  CLIENT_ID
 } = process.env;
 
 if (!ONEDRIVE_SHARE_LINK) {
   console.error('Falta ONEDRIVE_SHARE_LINK en el .env');
   process.exit(1);
 }
+if (!TENANT_ID || !CLIENT_ID) {
+  console.error('Falta TENANT_ID o CLIENT_ID en el .env (necesarios para validar el login de Microsoft)');
+  process.exit(1);
+}
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
+
+// --- 0. Validación del token de login de Microsoft (solo identifica al usuario, no toca Graph) ---
+
+const jwks = jwksClient({
+  jwksUri: `https://login.microsoftonline.com/${TENANT_ID}/discovery/v2.0/keys`
+});
+
+function getSigningKey(header, callback) {
+  jwks.getSigningKey(header.kid, (err, key) => {
+    if (err) return callback(err);
+    callback(null, key.getPublicKey());
+  });
+}
+
+function verifyUserToken(token) {
+  return new Promise((resolve, reject) => {
+    jwt.verify(
+      token,
+      getSigningKey,
+      {
+        audience: CLIENT_ID,
+        issuer: `https://login.microsoftonline.com/${TENANT_ID}/v2.0`
+      },
+      (err, decoded) => {
+        if (err) return reject(err);
+        resolve(decoded);
+      }
+    );
+  });
+}
 
 // --- 1. Convertir el enlace de "Compartir" de SharePoint/OneDrive en una URL de descarga directa ---
 // Para SharePoint Online / OneDrive for Business basta con añadir download=1 a la query string
@@ -197,9 +235,22 @@ function buildOrders(rows) {
 
 app.get('/api/pedidos', async (req, res) => {
   try {
-    const email = String(req.query.email || '').trim().toLowerCase();
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    if (!token) {
+      return res.status(401).json({ error: 'Falta iniciar sesión con Microsoft.' });
+    }
+
+    let decoded;
+    try {
+      decoded = await verifyUserToken(token);
+    } catch (err) {
+      return res.status(401).json({ error: 'Sesión no válida o caducada, inicia sesión de nuevo.' });
+    }
+
+    const email = (decoded.preferred_username || decoded.email || decoded.upn || '').toLowerCase().trim();
     if (!email) {
-      return res.status(400).json({ error: 'Falta el parámetro email.' });
+      return res.status(400).json({ error: 'Tu cuenta de Microsoft no tiene un email reconocible.' });
     }
 
     const fileBuffer = await downloadExcel();

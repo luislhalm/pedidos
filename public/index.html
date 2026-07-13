@@ -6,6 +6,7 @@
 <title>Panel de Pedidos</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://alcdn.msauth.net/browser/3.18.0/js/msal-browser.min.js"></script>
 <style>
   :root{
     --bg: #12161B;
@@ -170,12 +171,12 @@
     </div>
   </div>
 
-  <div class="controls">
+  <div class="controls" id="loginControls">
     <div class="field">
-      <label for="emailInput">Email de usuario</label>
-      <input type="email" id="emailInput" placeholder="usuario@empresa.com">
+      <label>Sesión</label>
+      <div id="userInfo" style="font-size:13px; color:var(--muted);">No has iniciado sesión.</div>
     </div>
-    <button class="primary" id="processBtn">Ver pedidos</button>
+    <button class="primary" id="loginBtn">Iniciar sesión con Microsoft</button>
   </div>
   <div class="status-msg" id="statusMsg"></div>
 
@@ -201,8 +202,24 @@
 </div>
 
 <script>
-const emailInput = document.getElementById('emailInput');
-const processBtn = document.getElementById('processBtn');
+// ---- Configuración de Entra ID ----
+// El Client ID y Tenant ID NO son secretos, es seguro tenerlos aquí en el frontend.
+const msalConfig = {
+  auth: {
+    clientId: 'PEGA_AQUI_TU_CLIENT_ID',
+    authority: 'https://login.microsoftonline.com/PEGA_AQUI_TU_TENANT_ID',
+    redirectUri: window.location.origin
+  },
+  cache: {
+    cacheLocation: 'sessionStorage'
+  }
+};
+
+const msalInstance = new msal.PublicClientApplication(msalConfig);
+let currentIdToken = null;
+
+const loginBtn = document.getElementById('loginBtn');
+const userInfo = document.getElementById('userInfo');
 const statusMsg = document.getElementById('statusMsg');
 const summaryWrap = document.getElementById('summaryWrap');
 const ordersContainer = document.getElementById('ordersContainer');
@@ -225,22 +242,58 @@ function escapeHtml(str){
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-emailInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') processBtn.click(); });
+async function initMsal(){
+  await msalInstance.initialize();
+  const accounts = msalInstance.getAllAccounts();
+  if(accounts.length > 0){
+    await acquireTokenAndLoad(accounts[0]);
+  }
+}
 
-processBtn.addEventListener('click', async () => {
-  const email = emailInput.value.trim();
-  if(!email){
-    statusMsg.textContent = 'Introduce tu email.';
-    statusMsg.className = 'status-msg err';
+loginBtn.addEventListener('click', async () => {
+  const accounts = msalInstance.getAllAccounts();
+  if(accounts.length > 0){
+    // Ya logueado -> cerrar sesión
+    await msalInstance.logoutPopup();
+    currentIdToken = null;
+    userInfo.textContent = 'No has iniciado sesión.';
+    loginBtn.textContent = 'Iniciar sesión con Microsoft';
+    summaryWrap.style.display = 'none';
+    ordersContainer.innerHTML = '';
+    statusMsg.textContent = '';
     return;
   }
 
+  try {
+    const result = await msalInstance.loginPopup({ scopes: ['User.Read'] });
+    await acquireTokenAndLoad(result.account);
+  } catch (err){
+    statusMsg.textContent = 'Error al iniciar sesión: ' + err.message;
+    statusMsg.className = 'status-msg err';
+  }
+});
+
+async function acquireTokenAndLoad(account){
+  msalInstance.setActiveAccount(account);
+  const tokenResp = await msalInstance.acquireTokenSilent({
+    scopes: ['User.Read'],
+    account
+  }).catch(() => msalInstance.acquireTokenPopup({ scopes: ['User.Read'] }));
+
+  currentIdToken = tokenResp.idToken;
+  userInfo.textContent = account.username;
+  loginBtn.textContent = 'Cerrar sesión';
+  await loadPedidos();
+}
+
+async function loadPedidos(){
   statusMsg.textContent = 'Consultando pedidos...';
   statusMsg.className = 'status-msg';
-  processBtn.disabled = true;
 
   try {
-    const resp = await fetch('/api/pedidos?email=' + encodeURIComponent(email));
+    const resp = await fetch('/api/pedidos', {
+      headers: { Authorization: 'Bearer ' + currentIdToken }
+    });
     const data = await resp.json();
 
     if(!resp.ok){
@@ -251,10 +304,10 @@ processBtn.addEventListener('click', async () => {
     activeFilter = null;
 
     if(!currentOrders.length){
-      statusMsg.textContent = 'No se han encontrado pedidos para ese email.';
+      statusMsg.textContent = 'No se han encontrado pedidos para tu usuario.';
       statusMsg.className = 'status-msg';
       summaryWrap.style.display = 'none';
-      ordersContainer.innerHTML = '<div class="empty-state"><div class="display">Sin pedidos</div>No hay líneas para el email indicado.</div>';
+      ordersContainer.innerHTML = '<div class="empty-state"><div class="display">Sin pedidos</div>No hay líneas para tu email.</div>';
       return;
     }
 
@@ -267,10 +320,8 @@ processBtn.addEventListener('click', async () => {
     statusMsg.className = 'status-msg err';
     summaryWrap.style.display = 'none';
     ordersContainer.innerHTML = '';
-  } finally {
-    processBtn.disabled = false;
   }
-});
+}
 
 function renderSummary(orders){
   const counts = { sin_stock_sin_fecha:0, sin_stock_con_fecha:0, con_stock:0 };
@@ -363,6 +414,8 @@ function renderOrders(orders){
 function toggleOrder(headEl){
   headEl.parentElement.classList.toggle('open');
 }
+
+initMsal();
 </script>
 </body>
 </html>
