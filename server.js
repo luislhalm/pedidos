@@ -17,17 +17,14 @@ if (!ONEDRIVE_SHARE_LINK) {
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- 1. Convertir el enlace de "Compartir" de OneDrive en una URL de descarga directa ---
-
-function encodeSharingUrl(url) {
-  const base64 = Buffer.from(url.trim(), 'utf-8').toString('base64');
-  const base64url = base64.replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-');
-  return `u!${base64url}`;
-}
+// --- 1. Convertir el enlace de "Compartir" de SharePoint/OneDrive en una URL de descarga directa ---
+// Para SharePoint Online / OneDrive for Business basta con añadir download=1 a la query string
+// del propio enlace de compartir (no hace falta pasar por ninguna API de Graph).
 
 function getDownloadUrl() {
-  const encoded = encodeSharingUrl(ONEDRIVE_SHARE_LINK);
-  return `https://api.onedrive.com/v1.0/shares/${encoded}/root/content`;
+  const url = new URL(ONEDRIVE_SHARE_LINK.trim());
+  url.searchParams.set('download', '1');
+  return url.toString();
 }
 
 // --- 2. Descarga del Excel con caché en memoria (para no descargarlo en cada petición) ---
@@ -41,14 +38,29 @@ async function downloadExcel() {
   }
 
   const url = getDownloadUrl();
-  const res = await fetch(url, { redirect: 'follow' });
+  const res = await fetch(url, {
+    redirect: 'follow',
+    headers: {
+      // Algunos servidores de SharePoint devuelven una página de aviso/interstitial
+      // a clientes sin cabeceras de navegador; simulamos una para evitarlo.
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+    }
+  });
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`No se ha podido descargar el Excel (${res.status}). ${body}`.trim());
+    throw new Error(`No se ha podido descargar el Excel (${res.status}). ${body}`.slice(0, 500));
   }
 
+  const contentType = res.headers.get('content-type') || '';
   const arrayBuffer = await res.arrayBuffer();
+
+  // Si en vez del Excel nos devuelven una página HTML, es que el enlace requiere login
+  // (o algo ha ido mal) y no hemos recibido el fichero real.
+  if (contentType.includes('text/html')) {
+    throw new Error('El servidor ha devuelto una página web en vez del Excel. Revisa que el enlace de OneDrive permita descarga y acceso sin iniciar sesión adicional.');
+  }
+
   cache = { buffer: Buffer.from(arrayBuffer), fetchedAt: now };
   return cache.buffer;
 }
