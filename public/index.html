@@ -6,7 +6,7 @@
 <title>Panel de Pedidos</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://alcdn.msauth.net/browser/3.18.0/js/msal-browser.min.js"></script>
+<script src="/vendor/msal-browser.min.js"></script>
 <style>
   :root{
     --bg: #12161B;
@@ -206,8 +206,8 @@
 // El Client ID y Tenant ID NO son secretos, es seguro tenerlos aquí en el frontend.
 const msalConfig = {
   auth: {
-    clientId: 'PEGA_AQUI_TU_CLIENT_ID',
-    authority: 'https://login.microsoftonline.com/PEGA_AQUI_TU_TENANT_ID',
+    clientId: 'bb8da9eb-4e26-45b2-9ccc-774da00a2ae1',
+    authority: 'https://login.microsoftonline.com/4af64d57-4be2-49ee-863f-1a7faee6e22b',
     redirectUri: window.location.origin
   },
   cache: {

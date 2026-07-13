@@ -4,26 +4,33 @@ const path = require('path');
 const XLSX = require('xlsx');
 const jwt = require('jsonwebtoken');
 const jwksClient = require('jwks-rsa');
+const msal = require('@azure/msal-node');
 
 const {
   PORT = 3000,
-  ONEDRIVE_SHARE_LINK,
   CACHE_SECONDS = 60,
   TENANT_ID,
-  CLIENT_ID
+  CLIENT_ID,
+  BACKEND_CLIENT_ID,
+  BACKEND_CLIENT_SECRET,
+  SITE_ID,
+  FILE_PATH
 } = process.env;
 
-if (!ONEDRIVE_SHARE_LINK) {
-  console.error('Falta ONEDRIVE_SHARE_LINK en el .env');
-  process.exit(1);
-}
 if (!TENANT_ID || !CLIENT_ID) {
   console.error('Falta TENANT_ID o CLIENT_ID en el .env (necesarios para validar el login de Microsoft)');
+  process.exit(1);
+}
+if (!BACKEND_CLIENT_ID || !BACKEND_CLIENT_SECRET || !SITE_ID || !FILE_PATH) {
+  console.error('Falta BACKEND_CLIENT_ID, BACKEND_CLIENT_SECRET, SITE_ID o FILE_PATH en el .env (necesarios para leer el Excel vía Graph)');
   process.exit(1);
 }
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/vendor/msal-browser.min.js', (req, res) => {
+  res.sendFile(path.join(__dirname, 'node_modules', '@azure', 'msal-browser', 'lib', 'msal-browser.min.js'));
+});
 
 // --- 0. Validación del token de login de Microsoft (solo identifica al usuario, no toca Graph) ---
 
@@ -55,17 +62,24 @@ function verifyUserToken(token) {
   });
 }
 
-// --- 1. Convertir el enlace de "Compartir" de SharePoint/OneDrive en una URL de descarga directa ---
-// Para SharePoint Online / OneDrive for Business basta con añadir download=1 a la query string
-// del propio enlace de compartir (no hace falta pasar por ninguna API de Graph).
+// --- Cliente de aplicación (client credentials) para Graph ---
 
-function getDownloadUrl() {
-  const url = new URL(ONEDRIVE_SHARE_LINK.trim());
-  url.searchParams.set('download', '1');
-  return url.toString();
+const cca = new msal.ConfidentialClientApplication({
+  auth: {
+    clientId: BACKEND_CLIENT_ID,
+    authority: `https://login.microsoftonline.com/${TENANT_ID}`,
+    clientSecret: BACKEND_CLIENT_SECRET
+  }
+});
+
+async function getGraphAppToken() {
+  const result = await cca.acquireTokenByClientCredential({
+    scopes: ['https://graph.microsoft.com/.default']
+  });
+  return result.accessToken;
 }
 
-// --- 2. Descarga del Excel con caché en memoria (para no descargarlo en cada petición) ---
+// --- Descarga del Excel desde SharePoint vía Graph (Sites.Selected) con caché en memoria ---
 
 let cache = { buffer: null, fetchedAt: 0 };
 
@@ -75,30 +89,19 @@ async function downloadExcel() {
     return cache.buffer;
   }
 
-  const url = getDownloadUrl();
+  const appToken = await getGraphAppToken();
+  const url = `https://graph.microsoft.com/v1.0/sites/${SITE_ID}/drive/root:${encodeURI(FILE_PATH)}:/content`;
+
   const res = await fetch(url, {
-    redirect: 'follow',
-    headers: {
-      // Algunos servidores de SharePoint devuelven una página de aviso/interstitial
-      // a clientes sin cabeceras de navegador; simulamos una para evitarlo.
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
-    }
+    headers: { Authorization: `Bearer ${appToken}` }
   });
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`No se ha podido descargar el Excel (${res.status}). ${body}`.slice(0, 500));
+    throw new Error(`No se ha podido descargar el Excel de SharePoint (${res.status}). ${body}`.slice(0, 500));
   }
 
-  const contentType = res.headers.get('content-type') || '';
   const arrayBuffer = await res.arrayBuffer();
-
-  // Si en vez del Excel nos devuelven una página HTML, es que el enlace requiere login
-  // (o algo ha ido mal) y no hemos recibido el fichero real.
-  if (contentType.includes('text/html')) {
-    throw new Error('El servidor ha devuelto una página web en vez del Excel. Revisa que el enlace de OneDrive permita descarga y acceso sin iniciar sesión adicional.');
-  }
-
   cache = { buffer: Buffer.from(arrayBuffer), fetchedAt: now };
   return cache.buffer;
 }
