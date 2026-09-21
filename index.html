@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Estado de Pedidos</title>
+<script src="https://alcdn.msauth.net/browser/3.7.1/js/msal-browser.min.js"></script>
+<style>
+  :root{
+    --rojo:#c8102e;
+    --rojo-oscuro:#9c0c23;
+    --gris-fondo:#f4f5f7;
+    --gris-texto:#333;
+    --gris-borde:#e0e0e0;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:var(--gris-fondo);
+    color:var(--gris-texto);
+  }
+  header{
+    background:var(--rojo);
+    color:#fff;
+    padding:14px 16px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+  }
+  header h1{
+    font-size:18px;
+    margin:0;
+    font-weight:600;
+  }
+  .version{
+    font-size:11px;
+    opacity:.85;
+  }
+  main{
+    max-width:900px;
+    margin:0 auto;
+    padding:16px;
+  }
+  #pantalla-login{
+    text-align:center;
+    padding:60px 16px;
+  }
+  #pantalla-login p{
+    color:#666;
+    margin-bottom:20px;
+  }
+  button{
+    background:var(--rojo);
+    color:#fff;
+    border:none;
+    border-radius:8px;
+    padding:12px 22px;
+    font-size:15px;
+    cursor:pointer;
+  }
+  button:hover{background:var(--rojo-oscuro);}
+  button:disabled{background:#aaa;cursor:default;}
+  #barra-usuario{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:14px;
+    font-size:13px;
+    color:#666;
+  }
+  #barra-usuario button{
+    background:transparent;
+    color:var(--rojo);
+    border:1px solid var(--rojo);
+    padding:6px 12px;
+    font-size:13px;
+  }
+  #barra-usuario button:hover{background:#fdeaec;}
+  #estado-carga{
+    text-align:center;
+    padding:40px 0;
+    color:#777;
+  }
+  #contenedor-tabla{
+    background:#fff;
+    border-radius:10px;
+    overflow:auto;
+    box-shadow:0 1px 3px rgba(0,0,0,.08);
+  }
+  table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:13px;
+  }
+  th, td{
+    padding:10px 12px;
+    text-align:left;
+    border-bottom:1px solid var(--gris-borde);
+    white-space:nowrap;
+  }
+  th{
+    background:#fafafa;
+    color:#555;
+    font-weight:600;
+    position:sticky;
+    top:0;
+  }
+  tr:hover td{background:#fbfbfb;}
+  #sin-pedidos, #error-carga{
+    text-align:center;
+    padding:40px 16px;
+    color:#777;
+  }
+  #error-carga{color:var(--rojo-oscuro);}
+  #btn-reintentar{
+    margin-top:14px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Estado de Pedidos</h1>
+  <span class="version">v1.0</span>
+</header>
+
+<main>
+
+  <div id="pantalla-login">
+    <p>Consulta el estado de tus pedidos con tu cuenta de la empresa.</p>
+    <button id="btn-login">Iniciar sesión</button>
+  </div>
+
+  <div id="pantalla-pedidos" style="display:none;">
+    <div id="barra-usuario">
+      <span id="texto-usuario"></span>
+      <button id="btn-logout">Cerrar sesión</button>
+    </div>
+
+    <div id="estado-carga">Cargando tus pedidos…</div>
+
+    <div id="error-carga" style="display:none;">
+      <p id="texto-error"></p>
+      <button id="btn-reintentar">Reintentar</button>
+    </div>
+
+    <div id="sin-pedidos" style="display:none;">
+      No se han encontrado pedidos asociados a tu usuario.
+    </div>
+
+    <div id="contenedor-tabla" style="display:none;">
+      <table id="tabla-pedidos">
+        <thead><tr id="fila-cabecera"></tr></thead>
+        <tbody id="cuerpo-tabla"></tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ============================================================================
+// CONFIGURACIÓN
+// ============================================================================
+const CONFIG = {
+  // "APP - Estado Pedido" (registro SPA de esta app en Entra ID)
+  clientId: "bb8da9eb-4e26-45b2-9ccc-774da00a2ae1",
+  tenantId: "4af64d57-4be2-49ee-863f-1a7faee6e22b",
+
+  // "API SQL" (backend compartido, el mismo que usa Inventarios)
+  apiSqlClientId: "7e111b26-74c9-4dad-a305-95af0bb33cdf",
+  apiBaseUrl: "https://app.capa.es/StockApi",
+};
+
+const msalConfig = {
+  auth: {
+    clientId: CONFIG.clientId,
+    authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+    // Debe coincidir EXACTAMENTE con una de las URI de redirección
+    // registradas en Entra ID para "APP - Estado Pedido".
+    redirectUri: window.location.origin + window.location.pathname,
+  },
+  cache: {
+    cacheLocation: "localStorage",
+  },
+};
+
+const scopeApiSql = [`api://${CONFIG.apiSqlClientId}/access_as_user`];
+
+const msalInstance = new msal.PublicClientApplication(msalConfig);
+
+// ============================================================================
+// ELEMENTOS
+// ============================================================================
+const elPantallaLogin = document.getElementById("pantalla-login");
+const elPantallaPedidos = document.getElementById("pantalla-pedidos");
+const elBtnLogin = document.getElementById("btn-login");
+const elBtnLogout = document.getElementById("btn-logout");
+const elTextoUsuario = document.getElementById("texto-usuario");
+const elEstadoCarga = document.getElementById("estado-carga");
+const elErrorCarga = document.getElementById("error-carga");
+const elTextoError = document.getElementById("texto-error");
+const elBtnReintentar = document.getElementById("btn-reintentar");
+const elSinPedidos = document.getElementById("sin-pedidos");
+const elContenedorTabla = document.getElementById("contenedor-tabla");
+const elFilaCabecera = document.getElementById("fila-cabecera");
+const elCuerpoTabla = document.getElementById("cuerpo-tabla");
+
+elBtnLogin.addEventListener("click", () => msalInstance.loginRedirect({ scopes: ["User.Read"] }));
+elBtnLogout.addEventListener("click", () => msalInstance.logoutRedirect());
+elBtnReintentar.addEventListener("click", cargarPedidos);
+
+// ============================================================================
+// ARRANQUE
+// ============================================================================
+(async function iniciar(){
+  await msalInstance.handleRedirectPromise().catch(err => console.error("Error en el redirect de login:", err));
+
+  const cuentas = msalInstance.getAllAccounts();
+  if (cuentas.length === 0){
+    mostrarPantallaLogin();
+    return;
+  }
+
+  msalInstance.setActiveAccount(cuentas[0]);
+  mostrarPantallaPedidos(cuentas[0]);
+  cargarPedidos();
+})();
+
+function mostrarPantallaLogin(){
+  elPantallaLogin.style.display = "";
+  elPantallaPedidos.style.display = "none";
+}
+
+function mostrarPantallaPedidos(cuenta){
+  elPantallaLogin.style.display = "none";
+  elPantallaPedidos.style.display = "";
+  elTextoUsuario.textContent = cuenta.username || cuenta.name || "";
+}
+
+// ============================================================================
+// TOKEN PARA LA API SQL
+// ============================================================================
+async function getTokenApiSql(){
+  const cuenta = msalInstance.getActiveAccount();
+  if (!cuenta) throw new Error("No hay sesión activa.");
+
+  try{
+    const resultado = await msalInstance.acquireTokenSilent({
+      scopes: scopeApiSql,
+      account: cuenta,
+    });
+    return resultado.accessToken;
+  } catch (err){
+    // Si el token silencioso falla (ej. primera vez, o expiró de forma que no se puede renovar sola), se pide con un popup.
+    const resultado = await msalInstance.acquireTokenPopup({ scopes: scopeApiSql });
+    return resultado.accessToken;
+  }
+}
+
+// ============================================================================
+// CARGA DE PEDIDOS
+// ============================================================================
+async function cargarPedidos(){
+  elErrorCarga.style.display = "none";
+  elSinPedidos.style.display = "none";
+  elContenedorTabla.style.display = "none";
+  elEstadoCarga.style.display = "";
+
+  try{
+    const token = await getTokenApiSql();
+
+    const respuesta = await fetch(`${CONFIG.apiBaseUrl}/api/pedidos/estado`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!respuesta.ok){
+      throw new Error(`El servidor respondió con un error (${respuesta.status}).`);
+    }
+
+    const pedidos = await respuesta.json();
+    pintarPedidos(pedidos);
+
+  } catch (err){
+    console.error("Error cargando pedidos:", err);
+    elEstadoCarga.style.display = "none";
+    elTextoError.textContent = "No se han podido cargar tus pedidos. Comprueba tu conexión e inténtalo de nuevo.";
+    elErrorCarga.style.display = "";
+  }
+}
+
+function pintarPedidos(pedidos){
+  elEstadoCarga.style.display = "none";
+
+  if (!Array.isArray(pedidos) || pedidos.length === 0){
+    elSinPedidos.style.display = "";
+    return;
+  }
+
+  // Las columnas se pintan dinámicamente según lo que devuelva la API,
+  // así no hay que tocar este HTML cuando se afine qué campos trae la vista SQL.
+  const columnas = Object.keys(pedidos[0]);
+
+  elFilaCabecera.innerHTML = columnas.map(c => `<th>${c}</th>`).join("");
+
+  elCuerpoTabla.innerHTML = pedidos.map(fila =>
+    `<tr>${columnas.map(c => `<td>${formatearValor(fila[c])}</td>`).join("")}</tr>`
+  ).join("");
+
+  elContenedorTabla.style.display = "";
+}
+
+function formatearValor(valor){
+  if (valor === null || valor === undefined) return "";
+  return String(valor);
+}
+</script>
+
+</body>
+</html>
