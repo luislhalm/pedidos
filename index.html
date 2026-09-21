@@ -215,6 +215,7 @@ elBtnReintentar.addEventListener("click", cargarPedidos);
 // ARRANQUE
 // ============================================================================
 (async function iniciar(){
+  await msalInstance.initialize();
   await msalInstance.handleRedirectPromise().catch(err => console.error("Error en el redirect de login:", err));
 
   const cuentas = msalInstance.getAllAccounts();
