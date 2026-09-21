@@ -122,7 +122,7 @@
 
 <header>
   <h1>Estado de Pedidos</h1>
-  <span class="version">v1.1</span>
+  <span class="version">v1.2</span>
 </header>
 
 <main>
@@ -214,9 +214,13 @@ elBtnReintentar.addEventListener("click", cargarPedidos);
 // ============================================================================
 // ARRANQUE
 // ============================================================================
+let tokenApiSqlDelRedirect = null;
+
 (async function iniciar(){
   await msalInstance.initialize();
-  await msalInstance.handleRedirectPromise().catch(err => console.error("Error en el redirect de login:", err));
+
+  const resultadoRedirect = await msalInstance.handleRedirectPromise()
+    .catch(err => { console.error("Error en el redirect:", err); return null; });
 
   const cuentas = msalInstance.getAllAccounts();
   if (cuentas.length === 0){
@@ -226,6 +230,14 @@ elBtnReintentar.addEventListener("click", cargarPedidos);
 
   msalInstance.setActiveAccount(cuentas[0]);
   mostrarPantallaPedidos(cuentas[0]);
+
+  // Si este arranque viene de volver de pedir el token de la API (redirect),
+  // ya lo tenemos aquí y no hace falta pedirlo otra vez.
+  if (resultadoRedirect && resultadoRedirect.accessToken &&
+      (resultadoRedirect.scopes || []).some(s => s.toLowerCase().includes("access_as_user"))){
+    tokenApiSqlDelRedirect = resultadoRedirect.accessToken;
+  }
+
   cargarPedidos();
 })();
 
@@ -244,6 +256,14 @@ function mostrarPantallaPedidos(cuenta){
 // TOKEN PARA LA API SQL
 // ============================================================================
 async function getTokenApiSql(){
+  // Si venimos de un redirect que ya trajo el token de la API, lo usamos y no
+  // volvemos a pedirlo.
+  if (tokenApiSqlDelRedirect){
+    const token = tokenApiSqlDelRedirect;
+    tokenApiSqlDelRedirect = null;
+    return token;
+  }
+
   const cuenta = msalInstance.getActiveAccount();
   if (!cuenta) throw new Error("No hay sesión activa.");
 
@@ -254,9 +274,14 @@ async function getTokenApiSql(){
     });
     return resultado.accessToken;
   } catch (err){
-    // Si el token silencioso falla (ej. primera vez, o expiró de forma que no se puede renovar sola), se pide con un popup.
-    const resultado = await msalInstance.acquireTokenPopup({ scopes: scopeApiSql });
-    return resultado.accessToken;
+    // Si no se puede conseguir en silencio (la primera vez, o hace falta que
+    // el usuario confirme algo), se pide con un redirect en la MISMA ventana
+    // — nunca con un popup. Esto recarga la página; al volver, "iniciar()"
+    // recoge el token del redirect.
+    console.warn("No se pudo obtener el token en silencio, se pide con redirect:", err);
+    await msalInstance.acquireTokenRedirect({ scopes: scopeApiSql });
+    // acquireTokenRedirect navega fuera de la página: no hay nada que devolver aquí.
+    return null;
   }
 }
 
@@ -271,6 +296,7 @@ async function cargarPedidos(){
 
   try{
     const token = await getTokenApiSql();
+    if (!token) return; // la página está a punto de recargar por el redirect
 
     const respuesta = await fetch(`${CONFIG.apiBaseUrl}/api/pedidos/estado`, {
       headers: { Authorization: `Bearer ${token}` },
