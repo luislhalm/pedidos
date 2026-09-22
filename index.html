@@ -113,6 +113,18 @@
     color:#777;
   }
   #error-carga{color:var(--rojo-oscuro);}
+  #texto-error{
+    white-space:pre-wrap;
+    word-break:break-word;
+    font-size:13px;
+    text-align:left;
+    background:#fff5f5;
+    border:1px solid #f3c2c9;
+    border-radius:8px;
+    padding:12px;
+    max-width:700px;
+    margin:0 auto;
+  }
   #btn-reintentar{
     margin-top:14px;
   }
@@ -303,7 +315,9 @@ async function cargarPedidos(){
     });
 
     if (!respuesta.ok){
-      throw new Error(`El servidor respondió con un error (${respuesta.status}).`);
+      let detalle = "";
+      try { detalle = await respuesta.text(); } catch (e) {}
+      throw new Error(`El servidor respondió con un error (${respuesta.status}).` + (detalle ? " " + detalle.slice(0, 300) : ""));
     }
 
     const pedidos = await respuesta.json();
@@ -312,7 +326,9 @@ async function cargarPedidos(){
   } catch (err){
     console.error("Error cargando pedidos:", err);
     elEstadoCarga.style.display = "none";
-    elTextoError.textContent = "No se han podido cargar tus pedidos. Comprueba tu conexión e inténtalo de nuevo.";
+    const nombre = err && err.name ? err.name + ": " : "";
+    const mensaje = err && err.message ? err.message : String(err);
+    elTextoError.textContent = nombre + mensaje;
     elErrorCarga.style.display = "";
   }
 }
